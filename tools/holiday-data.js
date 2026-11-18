@@ -46,6 +46,7 @@ function getColumns(holiday) {
   return [
     { key: 'name', header: '商品名', width: 48 },
     ...holiday.columns.map(column => ({ ...column, width: 24 })),
+    { key: 'onlyClub', header: 'clubのみ', width: 14 },
   ];
 }
 
@@ -70,6 +71,12 @@ function readExcelString(row, columnIndex, label) {
     throw new Error(`${label} は文字列で入力してください。`);
   }
   return value;
+}
+
+function readOnlyClub(value, label) {
+  if (value == null || value === '') return false;
+  if (value === '○') return true;
+  throw new Error(`${label} は空欄または「○」で入力してください。`);
 }
 
 function loadSourceProducts() {
@@ -97,14 +104,16 @@ async function loadExistingValues(holiday, source) {
   });
   const oldHeaders = {
     name: '商品名',
+    onlyClub: 'clubのみ',
     ...Object.fromEntries(holiday.columns.map(column => [column.key, column.header])),
   };
   const legacyHeaderAliases = holiday.key === 'yearEndNewYear'
     ? {
       beforeHolidayDeadline: '年内最終注文日',
       afterHolidayDeadline: '年初注文日',
+      onlyClub: 'クラブページのみ',
     }
-    : {};
+    : { onlyClub: 'クラブページのみ' };
   if (holiday.key === 'yearEndNewYear') {
     oldHeaders.deadline = '締切時間（JSON保持用）';
   }
@@ -127,6 +136,11 @@ async function loadExistingValues(holiday, source) {
       }
       values[column.key] = getCellValue(row, oldColumn);
     }
+    const onlyClubColumn = headerIndexes.get(oldHeaders.onlyClub)
+      || headerIndexes.get(legacyHeaderAliases.onlyClub);
+    values.onlyClub = onlyClubColumn
+      ? getCellValue(row, onlyClubColumn)
+      : (source[index].onlyClub ? '○' : '');
     existingValues.push(values);
   }
   return existingValues;
@@ -172,10 +186,17 @@ async function createTemplates({ refresh = false } = {}) {
       }
       const row = {
         name: product.name,
+        onlyClub: product.onlyClub ? '○' : '',
         ...delivery,
         ...(existingValues ? existingValues[index] : {}),
       };
       sheet.addRow(columns.map(column => row[column.key] ?? ''));
+      const onlyClubColumn = columns.findIndex(column => column.key === 'onlyClub') + 1;
+      sheet.getCell(index + 2, onlyClubColumn).dataValidation = {
+        type: 'list',
+        allowBlank: true,
+        formulae: ['"○"'],
+      };
     });
 
     const guide = workbook.addWorksheet('入力方法');
@@ -184,6 +205,7 @@ async function createTemplates({ refresh = false } = {}) {
       [`${holiday.label}の納期データ入力用ファイルです。`],
       ['「商品データ」シートの2行目以降を編集してください。'],
       ['Excelには商品名と、サイトに表示する納期・期間・注文日だけを記載します。'],
+      ['「clubのみ」は空欄ならfalse、○を入力するとtrueです。'],
       ['納期・期間・注文日は文字列で入力してください（例：12/25(金)、3営業日後）。'],
       ['商品名は変更せず、行の並び替えや削除をしないでください。商品情報との照合に使います。'],
       ['更新後、プロジェクトのルートで npm run holiday:convert を実行すると3種類のJSONを出力します。'],
@@ -219,13 +241,10 @@ async function readHolidayWorkbook(holiday) {
   const source = loadSourceProducts();
   const productMetadata = new Map();
   for (const product of source) {
-    const metadata = { category: product.category, onlyClub: product.onlyClub };
+    const metadata = { category: product.category };
     const existing = productMetadata.get(product.name);
-    if (existing && (
-      existing.category !== metadata.category
-      || existing.onlyClub !== metadata.onlyClub
-    )) {
-      throw new Error(`${product.name} のカテゴリーまたは掲載先が商品データ内で一致しません。`);
+    if (existing && existing.category !== metadata.category) {
+      throw new Error(`${product.name} のカテゴリーが商品データ内で一致しません。`);
     }
     productMetadata.set(product.name, metadata);
   }
@@ -244,6 +263,10 @@ async function readHolidayWorkbook(holiday) {
       throw new Error(`${label}の商品名・行順が products.json と一致しません。`);
     }
     const metadata = productMetadata.get(name);
+    const onlyClub = readOnlyClub(
+      getCellValue(row, columnIndexes.get('onlyClub')),
+      `${label}のclubのみ`,
+    );
     const delivery = {};
     for (const column of holiday.columns) {
       delivery[column.key] = readExcelString(
@@ -256,7 +279,7 @@ async function readHolidayWorkbook(holiday) {
       || delivery.afterHolidayDeadline !== '-';
     products.push({
       name,
-      onlyClub: metadata.onlyClub,
+      onlyClub,
       category: metadata.category,
       [holiday.key]: delivery,
     });
