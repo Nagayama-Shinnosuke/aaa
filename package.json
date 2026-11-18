@@ -1,0 +1,11 @@
+{
+  "name": "holiday-delivery-data",
+  "private": true,
+  "scripts": {
+    "holiday:convert": "node tools/holiday-data.js convert",
+    "holiday:templates": "node tools/holiday-data.js templates"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  }
+}
