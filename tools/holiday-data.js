@@ -4,70 +4,48 @@ const ExcelJS = require('exceljs');
 
 const ROOT = path.join(__dirname, '..');
 const EXCEL_DIR = path.join(ROOT, 'excel');
-const CATEGORY_LABELS = {
-  print: '紙に印刷する',
-  hanko: '印鑑・ハンコ作成',
-  naire: '名入れ・ノベルティ',
-};
-const CATEGORY_KEYS = Object.fromEntries(
-  Object.entries(CATEGORY_LABELS).map(([key, label]) => [label, key]),
-);
 const HOLIDAYS = [
   {
     key: 'obon',
     label: 'お盆',
     file: 'obon.xlsx',
-    columns: {
-      period: 'お盆期間',
-      normalDelivery: 'お盆期間納期',
-      deadline: '締切時間',
-      beforeHolidayDeadline: '期間前締切',
-      afterHolidayDeadline: '期間後締切',
-    },
+    columns: [
+      { key: 'normalDelivery', header: 'お盆期間納期' },
+      { key: 'deadline', header: '締切時間' },
+      { key: 'period', header: 'お盆期間' },
+      { key: 'beforeHolidayDeadline', header: '期間前締切' },
+      { key: 'afterHolidayDeadline', header: '期間後締切' },
+    ],
   },
   {
     key: 'goldenWeek',
     label: 'ゴールデンウィーク',
     file: 'goldenWeek.xlsx',
-    columns: {
-      period: 'ゴールデンウィーク期間',
-      normalDelivery: 'ゴールデンウィーク期間納期',
-      deadline: '締切時間',
-      beforeHolidayDeadline: '期間前締切',
-      afterHolidayDeadline: '期間後締切',
-    },
+    columns: [
+      { key: 'normalDelivery', header: 'ゴールデンウィーク期間納期' },
+      { key: 'deadline', header: '締切時間' },
+      { key: 'period', header: 'ゴールデンウィーク期間' },
+      { key: 'beforeHolidayDeadline', header: '期間前締切' },
+      { key: 'afterHolidayDeadline', header: '期間後締切' },
+    ],
   },
   {
     key: 'yearEndNewYear',
     label: '年末年始',
     file: 'yearEndNewYear.xlsx',
-    columns: {
-      period: '年末年始期間',
-      normalDelivery: '通常納期',
-      deadline: '締切時間（JSON保持用）',
-      beforeHolidayDeadline: '年内最終注文日',
-      afterHolidayDeadline: '年初注文日',
-    },
+    columns: [
+      { key: 'normalDelivery', header: '通常納期' },
+      { key: 'period', header: '年末年始期間' },
+      { key: 'beforeHolidayDeadline', header: '年内に届く最終ご注文日' },
+      { key: 'afterHolidayDeadline', header: '年初すぐに届くご注文日' },
+    ],
   },
-];
-
-const commonColumns = [
-  { key: 'name', header: '商品名', width: 48 },
-  { key: 'category', header: 'カテゴリー', width: 22 },
-  { key: 'onlyClub', header: 'クラブページのみ', width: 18 },
-  { key: 'baseNormalDelivery', header: '商品基本納期', width: 20 },
-  { key: 'baseDeadline', header: '商品基本締切時間', width: 22 },
 ];
 
 function getColumns(holiday) {
   return [
-    ...commonColumns,
-    ...Object.entries(holiday.columns).map(([key, header]) => ({
-      key,
-      header,
-      width: 24,
-    })),
-    { key: 'hasDelay', header: '納期変更あり', width: 18 },
+    { key: 'name', header: '商品名', width: 48 },
+    ...holiday.columns.map(column => ({ ...column, width: 24 })),
   ];
 }
 
@@ -76,20 +54,6 @@ function requireString(value, label) {
     throw new Error(`${label} は空欄にできません。`);
   }
   return value;
-}
-
-function readCategory(value, label) {
-  const category = CATEGORY_KEYS[value] ? CATEGORY_KEYS[value] : value;
-  if (!Object.hasOwn(CATEGORY_LABELS, category)) {
-    throw new Error(`${label} のカテゴリーが不正です: ${value}`);
-  }
-  return category;
-}
-
-function readBoolean(value, label) {
-  if (value === true || value === 'はい') return true;
-  if (value === false || value === 'いいえ') return false;
-  throw new Error(`${label} は「はい」または「いいえ」で入力してください。`);
 }
 
 function getCellValue(row, columnIndex) {
@@ -108,19 +72,76 @@ function readExcelString(row, columnIndex, label) {
   return value;
 }
 
-async function createTemplates() {
+function loadSourceProducts() {
   const sourcePath = path.join(ROOT, 'products.json');
   const source = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
   if (!Array.isArray(source) || source.length === 0) {
     throw new Error('products.json に商品データがありません。');
   }
+  return source;
+}
+
+async function loadExistingValues(holiday, source) {
+  const inputPath = path.join(EXCEL_DIR, holiday.file);
+  if (!fs.existsSync(inputPath)) return null;
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(inputPath);
+  const sheet = workbook.getWorksheet('商品データ');
+  if (!sheet) {
+    throw new Error(`${holiday.file} に「商品データ」シートがありません。`);
+  }
+  const headerIndexes = new Map();
+  sheet.getRow(1).eachCell((cell, columnNumber) => {
+    headerIndexes.set(cell.value, columnNumber);
+  });
+  const oldHeaders = {
+    name: '商品名',
+    ...Object.fromEntries(holiday.columns.map(column => [column.key, column.header])),
+  };
+  const legacyHeaderAliases = holiday.key === 'yearEndNewYear'
+    ? {
+      beforeHolidayDeadline: '年内最終注文日',
+      afterHolidayDeadline: '年初注文日',
+    }
+    : {};
+  if (holiday.key === 'yearEndNewYear') {
+    oldHeaders.deadline = '締切時間（JSON保持用）';
+  }
+  const nameColumn = headerIndexes.get(oldHeaders.name);
+  const existingValues = [];
+
+  for (let index = 0; index < source.length; index += 1) {
+    const row = sheet.getRow(index + 2);
+    if (!nameColumn || getCellValue(row, nameColumn) !== source[index].name) {
+      throw new Error(
+        `${holiday.file} の商品名・行順が products.json と異なるため、安全に更新できません。`,
+      );
+    }
+    const values = {};
+    for (const column of holiday.columns) {
+      const oldColumn = headerIndexes.get(oldHeaders[column.key])
+        || headerIndexes.get(legacyHeaderAliases[column.key]);
+      if (!oldColumn) {
+        throw new Error(`${holiday.file} に「${oldHeaders[column.key]}」列がありません。`);
+      }
+      values[column.key] = getCellValue(row, oldColumn);
+    }
+    existingValues.push(values);
+  }
+  return existingValues;
+}
+
+async function createTemplates({ refresh = false } = {}) {
+  const source = loadSourceProducts();
   fs.mkdirSync(EXCEL_DIR, { recursive: true });
 
   for (const holiday of HOLIDAYS) {
     const outputPath = path.join(EXCEL_DIR, holiday.file);
-    if (fs.existsSync(outputPath)) {
+    if (fs.existsSync(outputPath) && !refresh) {
       throw new Error(`${outputPath} はすでに存在します。上書きしないため処理を中止しました。`);
     }
+    const existingValues = refresh ? await loadExistingValues(holiday, source) : null;
     const columns = getColumns(holiday);
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'Holiday delivery data converter';
@@ -151,26 +172,10 @@ async function createTemplates() {
       }
       const row = {
         name: product.name,
-        category: CATEGORY_LABELS[product.category] || product.category,
-        onlyClub: product.onlyClub ? 'はい' : 'いいえ',
-        baseNormalDelivery: product.normalDelivery,
-        baseDeadline: product.deadline,
         ...delivery,
-        hasDelay: delivery.hasDelay ? 'はい' : 'いいえ',
+        ...(existingValues ? existingValues[index] : {}),
       };
       sheet.addRow(columns.map(column => row[column.key] ?? ''));
-      const rowNumber = index + 2;
-      sheet.getCell(rowNumber, 3).dataValidation = {
-        type: 'list',
-        allowBlank: false,
-        formulae: ['"はい,いいえ"'],
-      };
-      sheet.getCell(rowNumber, columns.findIndex(column => column.key === 'hasDelay') + 1)
-        .dataValidation = {
-          type: 'list',
-          allowBlank: false,
-          formulae: ['"はい,いいえ"'],
-        };
     });
 
     const guide = workbook.addWorksheet('入力方法');
@@ -178,10 +183,9 @@ async function createTemplates() {
     guide.addRows([
       [`${holiday.label}の納期データ入力用ファイルです。`],
       ['「商品データ」シートの2行目以降を編集してください。'],
-      ['商品名・カテゴリー・クラブページのみの列は、JSON出力に必要なので空欄にしないでください。'],
+      ['Excelには商品名と、サイトに表示する納期・期間・注文日だけを記載します。'],
       ['納期・期間・注文日は文字列で入力してください（例：12/25(金)、3営業日後）。'],
-      ['商品基本納期／商品基本締切時間は商品共通の値、休業期間列はこの休業期間用の値です。'],
-      ['年末年始の締切時間（JSON保持用）はサイト表示には使いませんが、JSONデータ保持のため変更せず残してください。'],
+      ['商品名は変更せず、行の並び替えや削除をしないでください。商品情報との照合に使います。'],
       ['更新後、プロジェクトのルートで npm run holiday:convert を実行すると3種類のJSONを出力します。'],
     ]);
     guide.getColumn(1).alignment = { wrapText: true, vertical: 'top' };
@@ -189,7 +193,7 @@ async function createTemplates() {
     guide.eachRow(row => { row.height = 30; });
 
     await workbook.xlsx.writeFile(outputPath);
-    console.log(`作成: ${path.relative(ROOT, outputPath)} (${source.length} 商品)`);
+    console.log(`${refresh ? '更新' : '作成'}: ${path.relative(ROOT, outputPath)} (${source.length} 商品)`);
   }
 }
 
@@ -212,39 +216,52 @@ async function readHolidayWorkbook(holiday) {
     throw new Error(`${holiday.file} の1行目の見出しがテンプレートと異なります。`);
   }
 
-  const products = [];
-  for (let rowNumber = 2; rowNumber <= sheet.rowCount; rowNumber += 1) {
-    const row = sheet.getRow(rowNumber);
-    if (row.values.slice(1, columns.length + 1).every(value => value == null || value === '')) {
-      continue;
+  const source = loadSourceProducts();
+  const productMetadata = new Map();
+  for (const product of source) {
+    const metadata = { category: product.category, onlyClub: product.onlyClub };
+    const existing = productMetadata.get(product.name);
+    if (existing && (
+      existing.category !== metadata.category
+      || existing.onlyClub !== metadata.onlyClub
+    )) {
+      throw new Error(`${product.name} のカテゴリーまたは掲載先が商品データ内で一致しません。`);
     }
-    const valueByKey = Object.fromEntries(
-      columns.map((column, index) => [column.key, getCellValue(row, index + 1)]),
-    );
-    const label = `${holiday.file} ${rowNumber}行目`;
-    const name = requireString(valueByKey.name, `${label}の商品名`);
+    productMetadata.set(product.name, metadata);
+  }
 
-    const delivery = {
-      period: readExcelString(row, 6, `${label}の${holiday.columns.period}`),
-      normalDelivery: readExcelString(row, 7, `${label}の${holiday.columns.normalDelivery}`),
-      deadline: readExcelString(row, 8, `${label}の${holiday.columns.deadline}`),
-      beforeHolidayDeadline: readExcelString(row, 9, `${label}の${holiday.columns.beforeHolidayDeadline}`),
-      afterHolidayDeadline: readExcelString(row, 10, `${label}の${holiday.columns.afterHolidayDeadline}`),
-      hasDelay: readBoolean(valueByKey.hasDelay, `${label}の納期変更あり`),
-    };
+  const columnIndexes = new Map(columns.map((column, index) => [column.key, index + 1]));
+  const products = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const rowNumber = index + 2;
+    const row = sheet.getRow(rowNumber);
+    const label = `${holiday.file} ${rowNumber}行目`;
+    const name = requireString(
+      getCellValue(row, columnIndexes.get('name')),
+      `${label}の商品名`,
+    );
+    if (name !== source[index].name) {
+      throw new Error(`${label}の商品名・行順が products.json と一致しません。`);
+    }
+    const metadata = productMetadata.get(name);
+    const delivery = {};
+    for (const column of holiday.columns) {
+      delivery[column.key] = readExcelString(
+        row,
+        columnIndexes.get(column.key),
+        `${label}の${column.header}`,
+      );
+    }
+    delivery.hasDelay = delivery.beforeHolidayDeadline !== '-'
+      || delivery.afterHolidayDeadline !== '-';
     products.push({
       name,
-      onlyClub: readBoolean(valueByKey.onlyClub, `${label}のクラブページのみ`),
-      category: readCategory(valueByKey.category, `${label}のカテゴリー`),
-      normalDelivery: readExcelString(row, 4, `${label}の商品基本納期`),
-      deadline: readExcelString(row, 5, `${label}の商品基本締切時間`),
+      onlyClub: metadata.onlyClub,
+      category: metadata.category,
       [holiday.key]: delivery,
     });
   }
 
-  if (products.length === 0) {
-    throw new Error(`${holiday.file} に商品データがありません。`);
-  }
   return products;
 }
 
@@ -267,7 +284,7 @@ async function convertWorkbooks() {
 async function main() {
   const command = process.argv[2];
   if (command === 'templates') {
-    await createTemplates();
+    await createTemplates({ refresh: process.argv.includes('--refresh') });
   } else if (command === 'convert') {
     await convertWorkbooks();
   } else {

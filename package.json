@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "holiday:convert": "node tools/holiday-data.js convert",
-    "holiday:templates": "node tools/holiday-data.js templates"
+    "holiday:templates": "node tools/holiday-data.js templates",
+    "holiday:templates:refresh": "node tools/holiday-data.js templates --refresh"
   },
   "dependencies": {
     "exceljs": "^4.4.0"
